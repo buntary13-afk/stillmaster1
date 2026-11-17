@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Робот сигналов Мосбиржи</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background:#101418; color:#dfe6ee; margin:0; padding:16px; }
+  h1 { font-size:20px; margin:0 0 12px; }
+  h2 { font-size:16px; margin:18px 0 8px; }
+  .panel { background:#1a2129; border:1px solid #2a3542; border-radius:10px; padding:14px; margin-bottom:14px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:8px; }
+  label { font-size:13px; color:#9fb0c0; }
+  select, input[type=text], input[type=number] { background:#0d1116; color:#dfe6ee; border:1px solid #2a3542; border-radius:6px; padding:6px 8px; font-size:13px; }
+  button { background:#2f6fed; color:#fff; border:0; border-radius:8px; padding:9px 16px; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.45; cursor:default; }
+  button.stop { background:#c23b3b; }
+  button.ghost { background:#2a3542; }
+  #status { font-size:13px; color:#9fb0c0; min-height:18px; }
+  #status .err { color:#ff8a80; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:6px 8px; border-bottom:1px solid #2a3542; text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align:left; }
+  thead th { color:#9fb0c0; font-weight:600; position:sticky; top:0; background:#1a2129; }
+  tr.good { background:rgba(47,111,237,.10); }
+  .up { color:#66d19e; } .down { color:#ff8a80; }
+  #alerts .alert { padding:8px 10px; border-radius:8px; background:#26324a; margin-bottom:6px; font-size:13px; }
+  .muted { color:#9fb0c0; font-size:12px; }
+  #progress { height:4px; background:#0d1116; border-radius:2px; overflow:hidden; margin:8px 0; }
+  #progress > div { height:100%; background:#2f6fed; width:0; transition:width .2s; }
+</style>
+</head>
+<body>
+<h1>Робот сигналов Мосбиржи</h1>
+
+<div class="panel">
+  <div class="row">
+    <label>Таймфрейм
+      <select id="interval">
+        <option value="5">5 минут</option>
+        <option value="15">15 минут</option>
+        <option value="60" selected>1 час</option>
+        <option value="24">1 день</option>
+      </select>
+    </label>
+    <label>Свечей
+      <select id="depth">
+        <option value="100">100</option>
+        <option value="200">200</option>
+        <option value="300">300</option>
+        <option value="500" selected>500</option>
+      </select>
+    </label>
+    <label>Эшелон
+      <select id="tier">
+        <option value="1">Голубые фишки</option>
+        <option value="2">Второй эшелон</option>
+        <option value="3">Третий эшелон</option>
+        <option value="0">Весь рынок</option>
+      </select>
+    </label>
+    <label>Порог баллов <input type="number" id="threshold" value="4" min="0" max="7" style="width:56px"></label>
+    <label>Исключить тикеры <input type="text" id="excl" placeholder="напр. SBER, GAZP" style="width:160px"></label>
+  </div>
+  <div class="row">
+    <label><input type="checkbox" id="useRsi" checked> RSI</label>
+    <label><input type="checkbox" id="useMacd" checked> MACD</label>
+    <label><input type="checkbox" id="useEma" checked> EMA</label>
+    <label><input type="checkbox" id="useVol" checked> Объём</label>
+    <label><input type="checkbox" id="sound" checked> Звук</label>
+    <label><input type="checkbox" id="notif"> Уведомления</label>
+    <label>Интервал мониторинга, сек <input type="number" id="monSec" value="60" min="15" max="600" style="width:70px"></label>
+  </div>
+  <div class="row">
+    <button id="btnScan">Сканировать</button>
+    <button id="btnStop" class="stop">Стоп</button>
+    <button id="btnMon">Начать мониторинг</button>
+    <button id="btnMonStop" class="stop" style="display:none">Остановить мониторинг</button>
+    <button id="btnClear" class="ghost">Сброс</button>
+  </div>
+  <div id="status"></div>
+  <div id="progress"><div></div></div>
+</div>
+
+<div class="panel">
+  <h2>Результаты сканирования</h2>
+  <div class="row">
+    <label>Сортировка
+      <select id="sortBy">
+        <option value="score">Баллы</option>
+        <option value="rsi">RSI (по возрастанию)</option>
+        <option value="vol">Отн. объём</option>
+      </select>
+    </label>
+    <label>Фильтр <input type="text" id="filter" placeholder="тикер" style="width:120px"></label>
+    <span class="muted" id="updated"></span>
+  </div>
+  <div style="max-height:420px; overflow:auto">
+    <table id="tbl">
+      <thead><tr>
+        <th>Тикер</th><th>Название</th><th>Эш.</th><th>Цена</th><th>RSI</th><th>MACD&nbsp;гист.</th><th>EMA</th><th>Отн.объём</th><th>ATR</th><th>Баллы</th><th>Стоп</th><th>Цель</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Активные сигналы</h2>
+  <div id="alerts"><div class="muted">Пока пусто — запустите мониторинг.</div></div>
+</div>
+
+<script>
+"use strict";
+
+/* ---------- Справочники эшелонов ---------- */
+const BLUE = new Set(["SBER","SBERP","GAZP","LKOH","GMKN","ROSN","NVTK","TATN","PLZL","MTSS","MGNT","CHMF","ALRS","MOEX","VTBR","AFLT","YDEX","SNGS","SNGSP","TRNFP","PHOR","IRAO","FEES","SBERP","PIKK","RUAL","SGZH","HYDR"]);
+const SECOND = new Set(["SMLT","UPRO","ENPG","BSPB","OZON","AFKS","MAGN","NLMK","LIFE","MTLR","MTLRP","GMKNP","ROSNP","VTBRP","SBERP","TATNP","SNGSP","AKRN","LKOH","WUSH","CBOM","SOFL","SVCB","LKOH"]);
+
+function tierOf(secid){
+  if (BLUE.has(secid)) return 1;
+  if (SECOND.has(secid)) return 2;
+  return 3;
+}
+
+/* ---------- Таймфреймы: у ISS нет 5- и 15-мин свечей — берём 1-мин и агрегируем ---------- */
+const TF = {
+  "5":  { interval: 1,  agg: 5 },
+  "15": { interval: 1,  agg: 15 },
+  "60": { interval: 60, agg: 1 },
+  "24": { interval: 24, agg: 1 }
+};
+
+/* ---------- Сеть: таймаут + 2 повторные попытки ---------- */
+async function fetchJSON(url, timeoutMs){
+  timeoutMs = timeoutMs || 15000;
+  for (let attempt = 0; attempt < 3; attempt++){
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), timeoutMs);
+      const res = await fetch(url, { signal: ctl.signal });
+      clearTimeout(t);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return await res.json();
+    } catch (e) {
+      if (attempt === 2) throw e;
+      await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+    }
+  }
+}
+
+async function fetchUniverse(){
+  const url = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json?iss.meta=off&iss.only=securities&securities.columns=SECID,SHORTNAME,PREVPRICE,VALTODAY";
+  const j = await fetchJSON(url);
+  const cols = j.securities.columns;
+  const iS = cols.indexOf("SECID"), iN = cols.indexOf("SHORTNAME"), iP = cols.indexOf("PREVPRICE"), iV = cols.indexOf("VALTODAY");
+  const out = [];
+  for (const r of j.securities.data){
+    if (!r[iS]) continue;
+    out.push({ secid: r[iS], name: r[iN] || r[iS], prevPrice: r[iP], valToday: r[iV] || 0 });
+  }
+  return out;
+}
+
+async function fetchCandlesHistory(secid, spec, from, till){
+  let all = [], start = 0;
+  const seen = new Set();
+  for (let page = 0; page < 30; page++){
+    const url = "https://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/securities/" + secid +
+      "/candles.json?iss.meta=off&iss.only=candles&candles.columns=begin,open,high,low,close,volume&interval=" +
+      spec.interval + "&from=" + from + "&till=" + till + "&start=" + start;
+    const j = await fetchJSON(url);
+    const c = j.candles;
+    if (!c || !c.data || !c.data.length) break;
+    const cols = c.columns;
+    const iB = cols.indexOf("begin"), iO = cols.indexOf("open"), iH = cols.indexOf("high"), iL = cols.indexOf("low"), iC = cols.indexOf("close"), iV = cols.indexOf("volume");
+    for (const r of c.data) if (!seen.has(r[iB])) { seen.add(r[iB]); all.push({ begin: r[iB], open: r[iO], high: r[iH], low: r[iL], close: r[iC], volume: r[iV] }); }
+    start += c.data.length;
+    if (c.data.length < 500) break;
+  }
+  return all;
+}
+
+async function fetchCandlesRT(secid, spec, from, till){
+  let all = [], start = 0;
+  const seen = new Set();
+  for (let page = 0; page < 30; page++){
+    const url = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities/" + secid +
+      "/candles.json?iss.meta=off&iss.only=candles&candles.columns=begin,open,high,low,close,volume&interval=" +
+      spec.interval + "&from=" + encodeURIComponent(from + " 00:00:00") + "&till=" + encodeURIComponent(till + " 23:59:59") + "&start=" + start;
+    const j = await fetchJSON(url);
+    const c = j.candles;
+    if (!c || !c.data || !c.data.length) break;
+    const cols = c.columns;
+    const iB = cols.indexOf("begin"), iO = cols.indexOf("open"), iH = cols.indexOf("high"), iL = cols.indexOf("low"), iC = cols.indexOf("close"), iV = cols.indexOf("volume");
+    for (const r of c.data) if (!seen.has(r[iB])) { seen.add(r[iB]); all.push({ begin: r[iB], open: r[iO], high: r[iH], low: r[iL], close: r[iC], volume: r[iV] }); }
+    start += c.data.length;
+    if (c.data.length < 500) break;
+  }
+  return all;
+}
+
+/* ---------- Кэш свечей: повторные запросы в пределах 5 минут добирают только новые свечи ---------- */
+const candleCache = new Map(); // ключ "secid|tf" -> { candles (сырые), at, count }
+const CACHE_TTL = 5 * 60 * 1000;
+
+function mergeCandles(oldArr, newArr){
+  const seen = new Set(oldArr.map(c => c.begin));
+  const out = oldArr.concat(newArr.filter(c => !seen.has(c.begin)));
+  out.sort((a,b) => a.begin < b.begin ? -1 : a.begin > b.begin ? 1 : 0);
+  return out;
+}
+
+/* Основной путь: history-эндпоинт; если он пуст — резервный candles-эндпоинт.
+   В diag.note кладём диагноз для сводки ошибок. */
+async function fetchCandles(secid, tf, count, diag){
+  const spec = TF[tf];
+  const nowMs = Date.now();
+  const key = secid + "|" + tf;
+  const cached = candleCache.get(key);
+  const till = new Date(nowMs + 86400000).toISOString().slice(0,10);
+  const aggOf = (arr) => spec.agg > 1 ? aggregate(arr, spec.agg).length : arr.length;
+  let all = [], hNote = "", rNote = "";
+
+  if (cached && nowMs - cached.at < CACHE_TTL && cached.count >= count && cached.candles.length){
+    // свежий кэш достаточной глубины: докачиваем только новые свечи от последней метки
+    const from = cached.candles[cached.candles.length-1].begin.slice(0,10);
+    let got = [];
+    try { got = await fetchCandlesHistory(secid, spec, from, till); }
+    catch(e){ hNote = "history: " + (e.message || "сеть"); }
+    all = mergeCandles(cached.candles, got);
+  } else {
+    // адаптивное окно: тесный запрос (сколько свечей нужно + 2 дня буфера),
+    // при нехватке окно расширяется втрое — максимум 3 попытки
+    const rawNeeded = count * (spec.agg || 1);
+    const perDay = spec.interval === 1 ? 600 : (spec.interval === 60 ? 13 : 1);
+    let days = Math.ceil(rawNeeded / perDay) + 2;
+    for (let t = 0; t < 3; t++){
+      const from = new Date(nowMs - days * 86400000).toISOString().slice(0,10);
+      let got = [], hErr = "", rErr = "";
+      try { got = await fetchCandlesHistory(secid, spec, from, till); }
+      catch(e){ hErr = "history: " + (e.message || "сеть"); }
+      if (!got.length){
+        try { got = await fetchCandlesRT(secid, spec, from, till); }
+        catch(e){ rErr = "резерв: " + (e.message || "сеть"); }
+      }
+      if (got.length){
+        all = mergeCandles(all, got);
+        if (aggOf(got) >= count) break;
+      } else {
+        hNote = hErr || "history пусто"; rNote = rErr;
+      }
+      days *= 3;
+    }
+    // сеть сорвала попытки, но старый кэш есть — отдаём его, а не ошибку
+    if (!all.length && cached && cached.candles.length) all = cached.candles.slice();
+  }
+  candleCache.set(key, { candles: all, at: nowMs, count: Math.max(count, cached ? cached.count : 0) });
+  if (diag) diag.note = all.length ? "" : ((hNote || "history пусто") + (rNote ? "; " + rNote : ""));
+  const keep = Math.max(count * (spec.agg || 1) * 2, count);
+  const trimmed = all.length > keep ? all.slice(-keep) : all;
+  if (spec.agg > 1) return aggregate(trimmed, spec.agg);
+  return trimmed;
+}
+
+/* ---------- Агрегация 1-мин свечей в 5/15-мин ---------- */
+function aggregate(candles, factor){
+  const out = [];
+  let cur = null;
+  for (const c of candles){
+    const m = c.begin.slice(0,16);            // "YYYY-MM-DD HH:MM"
+    const mm = parseInt(m.slice(14,16), 10);
+    const bucket = m.slice(0,14) + String(mm - (mm % factor)).padStart(2,"0") + ":00";
+    if (!cur || cur.begin !== bucket){
+      if (cur) out.push(cur);
+      cur = { begin: bucket, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume };
+    } else {
+      cur.high = Math.max(cur.high, c.high);
+      cur.low = Math.min(cur.low, c.low);
+      cur.close = c.close;
+      cur.volume += c.volume;
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/* ---------- Индикаторы ---------- */
+function ema(arr, n){
+  if (arr.length < n) return null;
+  let k = 2/(n+1), e = 0;
+  for (let i = 0; i < n; i++) e += arr[i];
+  e /= n;
+  const out = new Array(n-1).fill(null);
+  out.push(e);
+  for (let i = n; i < arr.length; i++){ e = arr[i]*k + e*(1-k); out.push(e); }
+  return out;
+}
+function rsi(closes, period){
+  period = period || 14;
+  if (closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++){ const d = closes[i] - closes[i-1]; if (d > 0) gains += d; else losses -= d; }
+  let ag = gains/period, al = losses/period;
+  for (let i = period + 1; i < closes.length; i++){
+    const d = closes[i] - closes[i-1];
+    ag = (ag*(period-1) + Math.max(d,0))/period;
+    al = (al*(period-1) + Math.max(-d,0))/period;
+  }
+  if (al === 0) return 100;
+  return 100 - 100/(1 + ag/al);
+}
+function macd(closes){
+  if (closes.length < 26 + 9 + 5) return null;
+  const e12 = ema(closes, 12), e26 = ema(closes, 26);
+  if (!e12 || !e26) return null;
+  const line = e26.map((v,i) => v === null ? null : e12[i] - v);
+  const valid = line.filter(v => v !== null);
+  const sig = ema(valid, 9);
+  if (!sig) return null;
+  const hist = [];
+  for (let i = 0; i < sig.length; i++) if (sig[i] !== null) hist.push(sig[i] - valid[i]);
+  return { hist: hist, prev: hist[hist.length-2] };
+}
+function atr(candles, period){
+  period = period || 14;
+  if (candles.length < period + 1) return null;
+  const trs = [];
+  for (let i = 1; i < candles.length; i++){
+    const h = candles[i].high, l = candles[i].low, pc = candles[i-1].close;
+    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+  }
+  let a = 0;
+  for (let i = 0; i < period; i++) a += trs[i];
+  a /= period;
+  for (let i = period; i < trs.length; i++) a = (a*(period-1) + trs[i])/period;
+  return a;
+}
+
+/* ---------- Скоринг и план сделки ---------- */
+function analyze(sec, candles, cfg){
+  if (candles.length < 40) return { error: "мало свечей (" + candles.length + ")" };
+  const closes = candles.map(c => c.close);
+  const r = cfg.useRsi ? rsi(closes, 14) : null;
+  const m = cfg.useMacd ? macd(closes) : null;
+  const e20 = cfg.useEma ? ema(closes, 20) : null;
+  const e50 = cfg.useEma ? ema(closes, 50) : null;
+  const a = atr(candles, 14);
+  const vols = candles.map(c => c.volume);
+  const last = vols[vols.length-1];
+  const avg = vols.slice(-21, -1).reduce((s,x) => s+x, 0) / 20;
+  const relVol = avg > 0 ? last/avg : 0;
+  const price = closes[closes.length-1];
+  let score = 0;
+  if (r !== null && r < 30) score += 2; else if (r !== null && r < 40) score += 1;
+  if (m && m.hist[m.hist.length-1] > 0 && m.hist[m.hist.length-1] > m.prev) score += 2;
+  if (e20 && price > e20[e20.length-1]) score += 1;
+  if (e20 && e50 && e20[e20.length-1] > e50[e50.length-1]) score += 1;
+  if (cfg.useVol && relVol >= 1.5) score += 1;
+  const plan = a ? { entry: price, stop: price - 2*a, target: price + 3*a } : null;
+  return { secid: sec.secid, name: sec.name, tier: tierOf(sec.secid), price, rsi: r, macdHist: m ? m.hist[m.hist.length-1] : null,
+           emaUp: (e20 && e50) ? (price > e20[e20.length-1] ? 1 : 0) + (e20[e20.length-1] > e50[e50.length-1] ? 1 : 0) : null,
+           relVol, atr: a, score, plan };
+}
+
+/* ---------- Настройки и хранение ---------- */
+const FIELDS = ["interval","depth","tier","threshold","excl","monSec","useRsi","useMacd","useEma","useVol","sound","notif"];
+function loadSettings(){
+  try {
+    const s = JSON.parse(localStorage.getItem("mrb_settings") || "{}");
+    for (const f of FIELDS){
+      const el = document.getElementById(f);
+      if (!el || s[f] === undefined) continue;
+      if (el.type === "checkbox") el.checked = !!s[f]; else el.value = s[f];
+    }
+    const saved = localStorage.getItem("mrb_results");
+    if (saved) { state.rows = JSON.parse(saved); renderTable(); }
+  } catch(e){}
+}
+function saveSettings(){
+  const s = {};
+  for (const f of FIELDS){
+    const el = document.getElementById(f);
+    s[f] = el.type === "checkbox" ? el.checked : el.value;
+  }
+  localStorage.setItem("mrb_settings", JSON.stringify(s));
+}
+
+/* ---------- Состояние ---------- */
+const state = { scanning: false, stopFlag: false, rows: [], monitoring: false, monTimer: null, lastAlert: {} };
+
+/* ---------- UI ---------- */
+function setStatus(msg, isErr){
+  const el = document.getElementById("status");
+  el.innerHTML = isErr ? '<span class="err">' + esc(msg) + "</span>" : esc(msg);
+}
+function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function setProgress(p){ document.querySelector("#progress > div").style.width = Math.round(p*100) + "%"; }
+function fmt(x, d){ return x === null || x === undefined || isNaN(x) ? "—" : Number(x).toFixed(d === undefined ? 2 : d); }
+
+function cfgFromUI(){
+  return {
+    tf: document.getElementById("interval").value,
+    count: parseInt(document.getElementById("depth").value, 10),
+    tier: parseInt(document.getElementById("tier").value, 10),
+    threshold: parseInt(document.getElementById("threshold").value, 10) || 0,
+    excl: new Set(document.getElementById("excl").value.split(",").map(s => s.trim().toUpperCase()).filter(Boolean)),
+    useRsi: document.getElementById("useRsi").checked,
+    useMacd: document.getElementById("useMacd").checked,
+    useEma: document.getElementById("useEma").checked,
+    useVol: document.getElementById("useVol").checked
+  };
+}
+
+/* ---------- Сканирование ---------- */
+async function startScan(){
+  if (state.scanning) return;
+  state.scanning = true; state.stopFlag = false;
+  saveSettings();
+  const cfg = cfgFromUI();
+  document.getElementById("btnScan").disabled = true;
+  try {
+    setStatus("Загружаю список бумаг…");
+    let universe = await fetchUniverse();
+    universe = universe.filter(s => !cfg.excl.has(s.secid));
+    if (cfg.tier !== 0) universe = universe.filter(s => tierOf(s.secid) === cfg.tier);
+    setStatus("К бумагам: " + universe.length);
+    const rows = [], errors = [];
+    // Проход по бумагам пачками по 8 параллельных запросов. Первичный запрос — компактный
+    // (до 100 свечей): его хватает фильтру, полный объём догружаем только прошедшим.
+    const slimCount = Math.min(cfg.count, 100);
+    const BATCH = 8;
+    let done = 0;
+    for (let i = 0; i < universe.length; i += BATCH){
+      if (state.stopFlag) break;
+      const batch = universe.slice(i, i + BATCH);
+      done = Math.min(i + BATCH, universe.length);
+      setProgress(done/universe.length);
+      setStatus("Обрабатываю " + batch[0].secid + " … " + done + " из " + universe.length);
+      await Promise.all(batch.map(async (sec) => {
+        try {
+          const diag = { note: "" };
+          const candles = await fetchCandles(sec.secid, cfg.tf, slimCount, diag);
+          let res = analyze(sec, candles, cfg);
+          if (!res.error && res.score >= cfg.threshold && cfg.count > slimCount){
+            // прошла фильтр — догружаем полную историю и пересчитываем точно
+            const full = await fetchCandles(sec.secid, cfg.tf, cfg.count, diag);
+            const res2 = analyze(sec, full, cfg);
+            if (!res2.error) res = res2;
+          }
+          if (res.error) { errors.push(sec.secid + ": " + res.error + (diag.note ? " [" + diag.note + "]" : "")); return; }
+          if (res.score >= cfg.threshold) rows.push(res);
+        } catch (e) {
+          errors.push(sec.secid + ": " + (e.message || "ошибка сети"));
+        }
+      }));
+    }
+    rows.sort((x,y) => y.score - x.score);
+    state.rows = rows;
+    renderTable();
+    localStorage.setItem("mrb_results", JSON.stringify(rows));
+    document.getElementById("updated").textContent = "Обновлено: " + new Date().toLocaleTimeString();
+    setStatus(state.stopFlag ? "Остановлено. Прошли фильтр: " + rows.length : "Готово. Прошли фильтр: " + rows.length + (errors.length ? ". Ошибки: " + errors.length : ""));
+    if (errors.length) setStatus(statusEl.textContent + " Примеры: " + errors.slice(0,3).join("; "), true);
+  } catch (e) {
+    setStatus("Ошибка загрузки: " + (e.message || e), true);
+  } finally {
+    state.scanning = false;
+    document.getElementById("btnScan").disabled = false;
+  }
+}
+const statusEl = { get textContent(){ return document.getElementById("status").textContent; } };
+
+/* ---------- Рендер таблицы ---------- */
+function renderTable(){
+  const sortBy = document.getElementById("sortBy").value;
+  const flt = document.getElementById("filter").value.trim().toUpperCase();
+  let rows = state.rows.slice();
+  if (flt) rows = rows.filter(r => r.secid.indexOf(flt) !== -1 || r.name.toUpperCase().indexOf(flt) !== -1);
+  if (sortBy === "rsi") rows.sort((a,b) => (a.rsi ?? 999) - (b.rsi ?? 999));
+  else if (sortBy === "vol") rows.sort((a,b) => b.relVol - a.relVol);
+  else rows.sort((a,b) => b.score - a.score);
+  const tb = document.querySelector("#tbl tbody");
+  tb.innerHTML = "";
+  const need = parseInt(document.getElementById("threshold").value, 10) || 0;
+  for (const r of rows){
+    const tr = document.createElement("tr");
+    if (r.score >= need) tr.className = "good";
+    const emaTxt = r.emaUp === null ? "—" : (r.emaUp === 2 ? "20>50 ✓" : r.emaUp === 1 ? "цена>20 ✓" : "—");
+    tr.innerHTML = "<td><b>" + esc(r.secid) + "</b></td><td>" + esc(r.name) + "</td><td>" + r.tier + "</td>" +
+      "<td>" + fmt(r.price, 2) + "</td>" +
+      "<td>" + fmt(r.rsi, 1) + "</td>" +
+      "<td>" + (r.macdHist === null ? "—" : (r.macdHist >= 0 ? "+" : "") + fmt(r.macdHist, 3)) + "</td>" +
+      "<td>" + emaTxt + "</td><td>" + fmt(r.relVol, 2) + "</td><td>" + fmt(r.atr, 2) + "</td>" +
+      "<td><b>" + r.score + "</b></td>" +
+      "<td>" + (r.plan ? fmt(r.plan.stop, 2) : "—") + "</td>" +
+      "<td>" + (r.plan ? fmt(r.plan.target, 2) : "—") + "</td>";
+    tb.appendChild(tr);
+  }
+  if (!rows.length) tb.innerHTML = '<tr><td colspan="12" class="muted">Нет данных — запустите сканирование.</td></tr>';
+}
+
+/* ---------- Звук и уведомления ---------- */
+function beep(){
+  if (!document.getElementById("sound").checked) return;
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = 880; o.type = "sine";
+    g.gain.value = 0.15; o.connect(g); g.connect(ctx.destination);
+    o.start();
+    setTimeout(() => { o.stop(); ctx.close(); }, 300);
+  } catch(e){}
+}
+function notify(title, body){
+  if (!document.getElementById("notif").checked) return;
+  try {
+    if (Notification && Notification.permission === "granted") new Notification(title, { body: body });
+    else if (Notification && Notification.permission !== "denied") Notification.requestPermission();
+  } catch(e){}
+}
+
+/* ---------- Антиспам: один и тот же уровень не чаще раза в минуту ---------- */
+function alertAllowed(key){
+  const now = Date.now(), last = state.lastAlert[key] || 0;
+  if (now - last < 60000) return false;
+  state.lastAlert[key] = now;
+  return true;
+}
+function pushAlert(text, key){
+  if (!alertAllowed(key)) return;
+  const box = document.getElementById("alerts");
+  if (box.querySelector(".muted")) box.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "alert";
+  div.textContent = new Date().toLocaleTimeString() + " — " + text;
+  box.prepend(div);
+  while (box.children.length > 30) box.removeChild(box.lastChild);
+  beep(); notify("Робот Мосбиржи", text);
+}
+
+/* ---------- Мониторинг ---------- */
+async function monitorTick(){
+  const cfg = cfgFromUI();
+  const targets = state.rows.slice(0, 30);
+  const BATCH = 8;
+  for (let i = 0; i < targets.length; i += BATCH){
+    await Promise.all(targets.slice(i, i + BATCH).map(async (r) => {
+      try {
+        const candles = await fetchCandles(r.secid, cfg.tf, cfg.count);
+        const res = analyze({ secid: r.secid, name: r.name, valToday: 0 }, candles, cfg);
+        if (res.error) return;
+        if (res.rsi !== null && r.rsi !== null){
+          const lvls = [30, 70];
+          for (const lv of lvls){
+            const crossed = (r.rsi > lv && res.rsi <= lv) || (r.rsi < lv && res.rsi >= lv);
+            if (crossed){
+              const key = r.secid + ":" + lv;
+              pushAlert(r.secid + ": RSI пересёк " + lv + " (" + fmt(r.rsi,1) + " → " + fmt(res.rsi,1) + ")", key);
+            }
+          }
+        }
+        r.rsi = res.rsi; r.price = res.price; r.score = res.score;
+      } catch(e){}
+    }));
+  }
+  renderTable();
+  localStorage.setItem("mrb_results", JSON.stringify(state.rows));
+}
+function startMonitor(){
+  if (state.monitoring) return;
+  const secs = Math.max(15, parseInt(document.getElementById("monSec").value, 10) || 60) * 1000;
+  state.monitoring = true;
+  document.getElementById("btnMon").style.display = "none";
+  document.getElementById("btnMonStop").style.display = "";
+  setStatus("Мониторинг включён (каждые " + secs/1000 + " с)");
+  monitorTick();
+  state.monTimer = setInterval(monitorTick, secs);
+}
+function stopMonitor(){
+  state.monitoring = false;
+  clearInterval(state.monTimer);
+  document.getElementById("btnMon").style.display = "";
+  document.getElementById("btnMonStop").style.display = "none";
+  setStatus("Мониторинг остановлен");
+}
+
+/* ---------- Сброс ---------- */
+function resetAll(){
+  document.getElementById("excl").value = "";
+  document.getElementById("threshold").value = 4;
+  state.rows = [];
+  state.lastAlert = {};
+  candleCache.clear();
+  renderTable();
+  document.getElementById("alerts").innerHTML = '<div class="muted">Пока пусто — запустите мониторинг.</div>';
+  localStorage.removeItem("mrb_results");
+  setStatus("Сброшено");
+}
+
+/* ---------- Обработчики ---------- */
+document.getElementById("btnScan").onclick = startScan;
+document.getElementById("btnStop").onclick = () => { state.stopFlag = true; setStatus("Останавливаю после текущей бумаги…"); };
+document.getElementById("btnMon").onclick = startMonitor;
+document.getElementById("btnMonStop").onclick = stopMonitor;
+document.getElementById("btnClear").onclick = resetAll;
+document.getElementById("sortBy").onchange = renderTable;
+document.getElementById("filter").oninput = renderTable;
+document.getElementById("threshold").onchange = () => { saveSettings(); renderTable(); };
+for (const f of FIELDS){
+  const el = document.getElementById(f);
+  if (el) el.onchange = saveSettings;
+}
+
+/* ---------- Старт: восстановление настроек и торг-сессия ---------- */
+loadSettings();
+(function sessionHint(){
+  const now = new Date(), mins = now.getHours()*60 + now.getMinutes();
+  if (mins < 9*60+50 || mins > 19*60) {
+    const d = document.createElement("div");
+    d.className = "muted"; d.id = "sess";
+    d.textContent = "Внимание: сейчас вне основной торговой сессии (10:00–18:45 МСК), данные могут не обновляться.";
+    document.getElementById("status").after(d);
+  }
+})();
+</script>
+</body>
+</html>
